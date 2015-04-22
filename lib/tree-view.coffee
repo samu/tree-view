@@ -14,6 +14,7 @@ Minimatch = null  # Defer requiring until actually needed
 Directory = require './directory'
 DirectoryView = require './directory-view'
 FileView = require './file-view'
+AutoHide = require './auto-hide'
 LocalStorage = window.localStorage
 
 toggleConfig = (keyPath) ->
@@ -57,6 +58,8 @@ class TreeView extends View
     @attachAfterProjectPathSet = state.attached and _.isEmpty(atom.project.getPaths())
     @width(state.width) if state.width > 0
     @attach() if state.attached
+
+    @autoHide = new AutoHide(this)
 
   attached: ->
     @focus() if @focusAfterAttach
@@ -144,7 +147,7 @@ class TreeView extends View
       @updateRoots()
 
   toggle: ->
-    @wasHiddenBeforeFocus = false
+    @autoHide.invalidate()
     if @isVisible()
       @detach()
     else
@@ -186,12 +189,9 @@ class TreeView extends View
 
   toggleFocus: ->
     if @hasFocus()
-      if @wasHiddenBeforeFocus
-        @detach()
-      else
-        @unfocus()
+      @unfocus() unless @autoHide.handlesToggleFocus()
     else
-      @wasHiddenBeforeFocus = true unless @isVisible()
+      @autoHide.rememberVisibility()
       @show()
 
   entryClicked: (e) ->
@@ -384,6 +384,7 @@ class TreeView extends View
       selectedEntry.toggleExpansion()
     else if selectedEntry instanceof FileView
       atom.workspace.open(selectedEntry.getPath(), {activatePane})
+      @autoHide.handleOpen()
 
   openSelectedEntrySplit: (orientation, side) ->
     selectedEntry = @selectedEntry()
@@ -392,6 +393,7 @@ class TreeView extends View
       if atom.workspace.getActivePaneItem()
         split = pane.split orientation, side
         atom.workspace.openURIInPane selectedEntry.getPath(), split
+        @autoHide.handleOpen()
       else
         @openSelectedEntry yes
 
