@@ -144,6 +144,7 @@ class TreeView extends View
       @updateRoots()
 
   toggle: ->
+    @wasHiddenBeforeFocus = false
     if @isVisible()
       @detach()
     else
@@ -185,8 +186,12 @@ class TreeView extends View
 
   toggleFocus: ->
     if @hasFocus()
-      @unfocus()
+      if @wasHiddenBeforeFocus
+        @detach()
+      else
+        @unfocus()
     else
+      @wasHiddenBeforeFocus = true unless @isVisible()
       @show()
 
   entryClicked: (e) ->
