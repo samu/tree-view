@@ -191,7 +191,7 @@ class TreeView extends View
 
   toggleFocus: ->
     if @hasFocus()
-      @unfocus() unless @autoHide.handlesToggleFocus()
+      @unfocus() unless @autoHide.handleToggleFocus()
     else
       @autoHide.rememberVisibility()
       @show()

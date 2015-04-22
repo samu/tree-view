@@ -9,7 +9,7 @@ class AutoHide
   rememberVisibility: ->
     @wasHiddenBeforeFocus = yes unless @treeView.isVisible()
 
-  handlesToggleFocus: ->
+  handleToggleFocus: ->
     if @wasHiddenBeforeFocus
       @treeView.detach()
       return yes
@@ -25,7 +25,7 @@ class NoopAutoHide
 
   rememberVisibility: ->
 
-  handlesToggleFocus: ->
+  handleToggleFocus: ->
     no
 
   invalidate: ->
