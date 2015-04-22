@@ -14,7 +14,7 @@ Minimatch = null  # Defer requiring until actually needed
 Directory = require './directory'
 DirectoryView = require './directory-view'
 FileView = require './file-view'
-AutoHide = require './auto-hide'
+initializeAutoHide = require './auto-hide'
 LocalStorage = window.localStorage
 
 toggleConfig = (keyPath) ->
@@ -59,7 +59,7 @@ class TreeView extends View
     @width(state.width) if state.width > 0
     @attach() if state.attached
 
-    @autoHide = new AutoHide(this)
+    @autoHide = initializeAutoHide(atom.config.get('tree-view.autoHide'), this)
 
   attached: ->
     @focus() if @focusAfterAttach
@@ -145,6 +145,8 @@ class TreeView extends View
       @onSideToggled(newValue)
     @disposables.add atom.config.onDidChange 'tree-view.sortFoldersBeforeFiles', =>
       @updateRoots()
+    @disposables.add atom.config.onDidChange 'tree-view.autoHide', =>
+      @autoHide = initializeAutoHide(atom.config.get('tree-view.autoHide'), this)
 
   toggle: ->
     @autoHide.invalidate()

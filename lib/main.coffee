@@ -16,6 +16,9 @@ module.exports =
     sortFoldersBeforeFiles:
       type: 'boolean'
       default: true
+    autoHide:
+      type: 'boolean'
+      default: false
 
   treeView: null
 

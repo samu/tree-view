@@ -1,4 +1,3 @@
-module.exports =
 class AutoHide
   constructor: (@treeView) ->
     @invalidate()
@@ -8,13 +7,32 @@ class AutoHide
       @treeView.detach()
 
   rememberVisibility: ->
-    @wasHiddenBeforeFocus = true unless @treeView.isVisible()
+    @wasHiddenBeforeFocus = yes unless @treeView.isVisible()
 
   handlesToggleFocus: ->
     if @wasHiddenBeforeFocus
       @treeView.detach()
-      return true
-    return false
+      return yes
+    return no
 
   invalidate: ->
-    @wasHiddenBeforeFocus = false
+    @wasHiddenBeforeFocus = no
+
+class NoopAutoHide
+  constructor: ->
+
+  handleOpen: ->
+
+  rememberVisibility: ->
+
+  handlesToggleFocus: ->
+    no
+
+  invalidate: ->
+
+
+module.exports = (autoHideEnabled, treeView) ->
+  if autoHideEnabled
+    return new AutoHide(treeView)
+
+  return new NoopAutoHide()
