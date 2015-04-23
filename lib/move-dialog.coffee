@@ -25,6 +25,7 @@ class MoveDialog extends Dialog
       return unless newPath
 
     if @initialPath is newPath
+      @trigger 'entry-moved'
       @close()
       return
 
@@ -39,6 +40,7 @@ class MoveDialog extends Dialog
       if repo = repoForPath(newPath)
         repo.getPathStatus(@initialPath)
         repo.getPathStatus(newPath)
+      @trigger 'entry-moved'
       @close()
     catch error
       @showError("#{error.message}.")

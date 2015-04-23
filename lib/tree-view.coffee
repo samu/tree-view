@@ -428,6 +428,9 @@ class TreeView extends View
     if oldPath
       MoveDialog ?= require './move-dialog'
       dialog = new MoveDialog(oldPath)
+      dialog.on 'entry-moved', (event) =>
+        @autoHide.handleOpen()
+        false
       dialog.attach()
 
   # Get the outline of a system call to the current platform's file manager.
@@ -608,9 +611,11 @@ class TreeView extends View
     dialog.on 'directory-created', (event, createdPath) =>
       @entryForPath(createdPath)?.reload()
       @selectEntryForPath(createdPath)
+      @autoHide.handleOpen()
       false
-    dialog.on 'file-created', (event, createdPath) ->
+    dialog.on 'file-created', (event, createdPath) =>
       atom.workspace.open(createdPath)
+      @autoHide.handleOpen()
       false
     dialog.attach()
 
