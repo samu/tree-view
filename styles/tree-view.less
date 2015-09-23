@@ -45,10 +45,20 @@
   padding-right: @component-padding;
   position: relative;
 
-  // This fixes #110, see that issue for more details
-  .entry:before {
-    content: '';
-    position: absolute;
+  .header {
+    position: relative;
+  }
+
+  .list-tree {
+    position: static;
+  }
+
+  .entry {
+    // This fixes #110, see that issue for more details
+    &:before {
+      content: '';
+      position: absolute;
+    }
   }
 }
 

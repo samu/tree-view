@@ -4,6 +4,7 @@ fs = require 'fs-plus'
 path = require 'path'
 temp = require('temp').track()
 os = require 'os'
+{buildDragEvents} = require "./event-helpers"
 
 waitsForFileToOpen = (causeFileToOpen) ->
   waitsFor (done) ->
@@ -11,6 +12,11 @@ waitsForFileToOpen = (causeFileToOpen) ->
       disposable.dispose()
       done()
     causeFileToOpen()
+
+clickEvent = (properties) ->
+  event = $.Event('click')
+  _.extend(event, properties) if properties?
+  event
 
 describe "TreeView", ->
   [treeView, path1, path2, root1, root2, sampleJs, sampleTxt, workspaceElement] = []
@@ -193,7 +199,7 @@ describe "TreeView", ->
       runs ->
         treeView = $(atom.workspace.getLeftPanels()[0].getItem()).view()
         expect(treeView).toExist()
-        expect(treeView.selectedEntry()).toMatchSelector(".file:contains(tree-view.js)")
+        expect($(treeView.selectedEntry())).toMatchSelector(".file:contains(tree-view.js)")
         root1 = $(treeView.roots[0])
         expect(root1.find(".directory:contains(dir1)")).toHaveClass("expanded")
 
@@ -374,6 +380,41 @@ describe "TreeView", ->
         atom.commands.dispatch(workspaceElement, 'tree-view:reveal-active-file')
         expect(treeView.hasParent()).toBeTruthy()
         expect(treeView.focus).toHaveBeenCalled()
+
+    describe 'if there are more items than can be visible in the viewport', ->
+      [rootDirPath] = []
+
+      beforeEach ->
+        rootDirPath = fs.absolute(temp.mkdirSync('tree-view-root1'))
+
+        for i in [1..20]
+          filepath = path.join(rootDirPath, "file-#{i}.txt")
+          fs.writeFileSync(filepath, "doesn't matter")
+
+        atom.project.setPaths([rootDirPath])
+        treeView.height(100)
+        jasmine.attachToDOM(workspaceElement)
+
+      it 'scrolls the selected file into the visible view', ->
+        # Open file at bottom
+        waitsForPromise -> atom.workspace.open(path.join(rootDirPath, 'file-20.txt'))
+        runs ->
+          atom.commands.dispatch(workspaceElement, 'tree-view:reveal-active-file')
+          expect(treeView.scrollTop()).toBeGreaterThan 400
+
+        # Open file in the middle, should be centered in scroll
+        waitsForPromise -> atom.workspace.open(path.join(rootDirPath, 'file-10.txt'))
+        runs ->
+          atom.commands.dispatch(workspaceElement, 'tree-view:reveal-active-file')
+          expect(treeView.scrollTop()).toBeLessThan 400
+          expect(treeView.scrollTop()).toBeGreaterThan 0
+
+        # Open file at top
+        waitsForPromise -> atom.workspace.open(path.join(rootDirPath, 'file-1.txt'))
+        runs ->
+          atom.commands.dispatch(workspaceElement, 'tree-view:reveal-active-file')
+          expect(treeView.scrollTop()).toEqual 0
+
 
   describe "when tool-panel:unfocus is triggered on the tree view", ->
     it "surrenders focus to the workspace but remains open", ->
@@ -745,6 +786,16 @@ describe "TreeView", ->
           root1.click()
           atom.commands.dispatch(treeView.element, 'core:move-up')
           expect(treeView.roots[0]).toHaveClass 'selected'
+
+      describe "when the tree view is empty", ->
+        it "does nothing", ->
+          atom.commands.dispatch(treeView.roots[0].querySelector(".header"), "tree-view:remove-project-folder")
+          atom.commands.dispatch(treeView.roots[0].querySelector(".header"), "tree-view:remove-project-folder")
+          expect(atom.project.getPaths()).toHaveLength(0)
+          expect(treeView.element.querySelectorAll('.selected').length).toBe 0
+
+          atom.commands.dispatch(treeView.element, 'core:move-up')
+          expect(treeView.element.querySelectorAll('.selected').length).toBe 0
 
     describe "core:move-to-top", ->
       it "scrolls to the top", ->
@@ -1377,6 +1428,23 @@ describe "TreeView", ->
 
             expect(fs.existsSync(path.join(dirPath2, path.basename(filePath)))).toBeTruthy()
             expect(fs.existsSync(filePath)).toBeFalsy()
+
+      describe "when pasting the file fails due to a filesystem error", ->
+        it "shows a notification", ->
+          spyOn(fs, 'writeFileSync').andCallFake ->
+            writeError = new Error("ENOENT: no such file or directory, open '#{filePath}'")
+            writeError.code = 'ENOENT'
+            writeError.path = filePath
+            throw writeError
+
+          LocalStorage['tree-view:copyPath'] = JSON.stringify([filePath])
+
+          fileView2.click()
+          atom.notifications.clear()
+          atom.commands.dispatch(treeView.element, "tree-view:paste")
+
+          expect(atom.notifications.getNotifications()[0].getMessage()).toContain 'Unable to paste paths'
+          expect(atom.notifications.getNotifications()[0].getDetail()).toContain 'ENOENT: no such file or directory'
 
     describe "tree-view:add-file", ->
       [addPanel, addDialog] = []
@@ -2043,6 +2111,8 @@ describe "TreeView", ->
       expect(treeView.find('.directory .name:contains(test.txt)').length).toBe 1
 
   describe "Git status decorations", ->
+    [projectPath, modifiedFile, originalFileContent] = []
+
     beforeEach ->
       projectPath = fs.realpathSync(temp.mkdirSync('tree-view-project'))
       workingDirFixture = path.join(__dirname, 'fixtures', 'git', 'working-dir')
@@ -2096,6 +2166,31 @@ describe "TreeView", ->
       it "adds a custom style", ->
         expect(treeView.find('.file:contains(ignored.txt)')).toHaveClass 'status-ignored'
 
+    describe "when the project is a symbolic link to the repository root", ->
+      beforeEach ->
+        symlinkPath = temp.path('tree-view-project')
+        fs.symlinkSync(projectPath, symlinkPath)
+        atom.project.setPaths([symlinkPath])
+        $(treeView.roots[0].entries).find('.directory:contains(dir)')[0].expand()
+
+        waitsFor (done) ->
+          disposable = atom.project.getRepositories()[0].onDidChangeStatuses ->
+            disposable.dispose()
+            done()
+
+      describe "when a file is modified", ->
+        it "updates its and its parent directories' styles", ->
+          expect(treeView.find('.file:contains(b.txt)')).toHaveClass 'status-modified'
+          expect(treeView.find('.directory:contains(dir)')).toHaveClass 'status-modified'
+
+      describe "when a file loses its modified status", ->
+        it "updates its and its parent directories' styles", ->
+          fs.writeFileSync(modifiedFile, originalFileContent)
+          atom.project.getRepositories()[0].getPathStatus(modifiedFile)
+
+          expect(treeView.find('.file:contains(b.txt)')).not.toHaveClass 'status-modified'
+          expect(treeView.find('.directory:contains(dir)')).not.toHaveClass 'status-modified'
+
   describe "when the resize handle is double clicked", ->
     beforeEach ->
       treeView.width(10).find('.list-tree').width 100
@@ -2108,6 +2203,51 @@ describe "TreeView", ->
       treeView.width(1000)
       treeView.find('.tree-view-resize-handle').trigger 'dblclick'
       expect(treeView.width()).toBeLessThan 1000
+
+  describe "when other panels are added", ->
+    beforeEach ->
+      jasmine.attachToDOM(workspaceElement)
+
+    it "should resize normally", ->
+      expect(treeView).toBeVisible()
+      expect(atom.workspace.getLeftPanels().length).toBe(1)
+
+      treeView.width(100)
+
+      expect(treeView.width()).toBe(100)
+
+      panel = document.createElement('div')
+      panel.style.width = '100px'
+      atom.workspace.addLeftPanel({item: panel, priority: 10})
+
+      expect(atom.workspace.getLeftPanels().length).toBe(2)
+      expect(treeView.width()).toBe(100)
+
+      treeView.resizeTreeView({pageX: 250, which: 1})
+
+      expect(treeView.width()).toBe(150)
+
+    it "should resize normally on the right side", ->
+      atom.commands.dispatch(workspaceElement, 'tree-view:toggle-side')
+      expect(treeView).toMatchSelector('[data-show-on-right-side="true"]')
+
+      expect(treeView).toBeVisible()
+      expect(atom.workspace.getRightPanels().length).toBe(1)
+
+      treeView.width(100)
+
+      expect(treeView.width()).toBe(100)
+
+      panel = document.createElement('div')
+      panel.style.width = '100px'
+      atom.workspace.addRightPanel({item: panel, priority: 10})
+
+      expect(atom.workspace.getRightPanels().length).toBe(2)
+      expect(treeView.width()).toBe(100)
+
+      treeView.resizeTreeView({pageX: $(document.body).width() - 250, which: 1})
+
+      expect(treeView.width()).toBe(150)
 
   describe "selecting items", ->
     [dirView, fileView1, fileView2, fileView3, treeView, rootDirPath, dirPath, filePath1, filePath2, filePath3] = []
@@ -2358,3 +2498,148 @@ describe "TreeView", ->
         element.innerText
 
       expect(gammaEntries).toEqual(["delta.txt", "epsilon.txt", "theta"])
+
+  describe "showSelectedEntryInFileManager()", ->
+    beforeEach ->
+      atom.notifications.clear()
+
+    it "displays the standard error output when the process fails", ->
+      {BufferedProcess} = require 'atom'
+      spyOn(BufferedProcess.prototype, 'spawn').andCallFake ->
+        EventEmitter = require 'events'
+        fakeProcess = new EventEmitter()
+        fakeProcess.send = ->
+        fakeProcess.kill = ->
+        fakeProcess.stdout = new EventEmitter()
+        fakeProcess.stdout.setEncoding = ->
+        fakeProcess.stderr = new EventEmitter()
+        fakeProcess.stderr.setEncoding = ->
+        @process = fakeProcess
+        process.nextTick ->
+          fakeProcess.stderr.emit('data', 'bad process')
+          fakeProcess.stderr.emit('close')
+          fakeProcess.stdout.emit('close')
+          fakeProcess.emit('exit')
+
+      treeView.showSelectedEntryInFileManager()
+
+      waitsFor ->
+        atom.notifications.getNotifications().length is 1
+
+      runs ->
+        expect(atom.notifications.getNotifications()[0].getMessage()).toContain 'Opening folder'
+        expect(atom.notifications.getNotifications()[0].getMessage()).toContain 'failed'
+        expect(atom.notifications.getNotifications()[0].getDetail()).toContain 'bad process'
+
+    it "handle errors thrown when spawning the OS file manager", ->
+      spyOn(treeView, 'fileManagerCommandForPath').andReturn
+        command: '/this/command/does/not/exist'
+        label: 'Finder'
+        args: ['foo']
+
+      treeView.showSelectedEntryInFileManager()
+
+      waitsFor ->
+        atom.notifications.getNotifications().length is 1
+
+      runs ->
+        expect(atom.notifications.getNotifications()[0].getMessage()).toContain 'Opening folder in Finder failed'
+        expect(atom.notifications.getNotifications()[0].getDetail()).toContain 'ENOENT'
+
+  describe "Dragging and dropping files", ->
+    beforeEach ->
+      rootDirPath = fs.absolute(temp.mkdirSync('tree-view'))
+
+      alphaFilePath = path.join(rootDirPath, "alpha.txt")
+      zetaFilePath = path.join(rootDirPath, "zeta.txt")
+
+      alphaDirPath = path.join(rootDirPath, "alpha")
+      betaFilePath = path.join(alphaDirPath, "beta.txt")
+      etaDirPath = path.join(alphaDirPath, "eta")
+
+      gammaDirPath = path.join(rootDirPath, "gamma")
+      deltaFilePath = path.join(gammaDirPath, "delta.txt")
+      epsilonFilePath = path.join(gammaDirPath, "epsilon.txt")
+      thetaDirPath = path.join(gammaDirPath, "theta")
+
+      fs.writeFileSync(alphaFilePath, "doesn't matter")
+      fs.writeFileSync(zetaFilePath, "doesn't matter")
+
+      fs.makeTreeSync(alphaDirPath)
+      fs.writeFileSync(betaFilePath, "doesn't matter")
+      fs.makeTreeSync(etaDirPath)
+
+      fs.makeTreeSync(gammaDirPath)
+      fs.writeFileSync(deltaFilePath, "doesn't matter")
+      fs.writeFileSync(epsilonFilePath, "doesn't matter")
+      fs.makeTreeSync(thetaDirPath)
+
+      atom.project.setPaths([rootDirPath])
+
+    describe "when dragging a FileView onto a DirectoryView's header", ->
+      it "should add the selected class to the DirectoryView", ->
+        # Dragging theta onto alphaDir
+        alphaDir = $(treeView.roots[0].entries).find('.directory:contains(alpha):first')
+
+        gammaDir = $(treeView.roots[0].entries).find('.directory:contains(gamma):first')
+        gammaDir[0].expand()
+        deltaFile = gammaDir[0].entries.children[2]
+
+        [dragStartEvent, dragEnterEvent, dropEvent] = buildDragEvents(deltaFile, alphaDir.find('.header')[0])
+        treeView.onDragStart(dragStartEvent)
+        treeView.onDragEnter(dragEnterEvent)
+        expect(alphaDir).toHaveClass('selected')
+
+        # Remains selected when dragging to a child of the heading entry
+        treeView.onDragEnter(dragEnterEvent)
+        treeView.onDragLeave(dragEnterEvent)
+        expect(alphaDir).toHaveClass('selected')
+
+        treeView.onDragLeave(dragEnterEvent)
+        expect(alphaDir).not.toHaveClass('selected')
+
+    describe "when dropping a FileView onto a DirectoryView's header", ->
+      it "should move the file to the hovered directory", ->
+        # Dragging delta.txt onto alphaDir
+        alphaDir = $(treeView.roots[0].entries).find('.directory:contains(alpha):first')
+        alphaDir[0].expand()
+
+        gammaDir = $(treeView.roots[0].entries).find('.directory:contains(gamma):first')
+        gammaDir[0].expand()
+        deltaFile = gammaDir[0].entries.children[2]
+
+        [dragStartEvent, dragEnterEvent, dropEvent] = buildDragEvents(deltaFile, alphaDir.find('.header')[0], alphaDir[0])
+
+        runs ->
+          treeView.onDragStart(dragStartEvent)
+          treeView.onDrop(dropEvent)
+          expect(alphaDir[0].children.length).toBe 2
+
+        waitsFor "directory view contents to refresh", ->
+          $(treeView.roots[0].entries).find('.directory:contains(alpha):first .entry').length > 2
+
+        runs ->
+          expect($(treeView.roots[0].entries).find('.directory:contains(alpha):first .entry').length).toBe 3
+
+    describe "when dropping a DirectoryView onto a DirectoryView's header", ->
+      it "should move the directory to the hovered directory", ->
+        # Dragging delta.txt onto alphaDir
+        alphaDir = $(treeView.roots[0].entries).find('.directory:contains(alpha):first')
+        alphaDir[0].expand()
+
+        gammaDir = $(treeView.roots[0].entries).find('.directory:contains(gamma):first')
+        gammaDir[0].expand()
+        thetaDir = gammaDir[0].entries.children[0]
+
+        [dragStartEvent, dragEnterEvent, dropEvent] = buildDragEvents(thetaDir, alphaDir.find('.header')[0], alphaDir[0])
+
+        runs ->
+          treeView.onDragStart(dragStartEvent)
+          treeView.onDrop(dropEvent)
+          expect(alphaDir[0].children.length).toBe 2
+
+        waitsFor "directory view contents to refresh", ->
+          $(treeView.roots[0].entries).find('.directory:contains(alpha):first .entry').length > 2
+
+        runs ->
+          expect($(treeView.roots[0].entries).find('.directory:contains(alpha):first .entry').length).toBe 3
