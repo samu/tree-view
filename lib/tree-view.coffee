@@ -27,7 +27,7 @@ class TreeView extends View
 
   @content: ->
     @div class: 'tree-view-resizer tool-panel', 'data-show-on-right-side': atom.config.get('tree-view.showOnRightSide'), =>
-      @div class: 'tree-view-scroller', outlet: 'scroller', =>
+      @div class: 'tree-view-scroller order--center', outlet: 'scroller', =>
         @ol class: 'tree-view full-menu list-tree has-collapsable-children focusable-panel', tabindex: -1, outlet: 'list'
       @div class: 'tree-view-resize-handle', outlet: 'resizeHandle'
 
@@ -710,7 +710,7 @@ class TreeView extends View
     # Force a redraw so the scrollbars are styled correctly based on the theme
     @element.style.display = 'none'
     @element.offsetWidth
-    @element.style.display = 'block'
+    @element.style.display = ''
 
   onMouseDown: (e) ->
     e.stopPropagation()
@@ -830,7 +830,7 @@ class TreeView extends View
     e.originalEvent.dataTransfer.setDragImage(fileNameElement[0], 0, 0)
     e.originalEvent.dataTransfer.setData("initialPath", initialPath)
 
-    window.requestAnimationFrame =>
+    window.requestAnimationFrame ->
       fileNameElement.remove()
 
   # Handle entry dragover event; reset default dragover actions
