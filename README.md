@@ -1,4 +1,7 @@
-# Tree View package [![Build Status](https://travis-ci.org/atom/tree-view.svg?branch=master)](https://travis-ci.org/atom/tree-view)
+# Tree View package
+[![OS X Build Status](https://travis-ci.org/atom/tree-view.svg?branch=master)](https://travis-ci.org/atom/tree-view)
+[![Windows Build Status](https://ci.appveyor.com/api/projects/status/com793ehi0hajrkd/branch/master?svg=true)](https://ci.appveyor.com/project/Atom/tree-view/branch/master) [![Dependency Status](https://david-dm.org/atom/tree-view.svg)](https://david-dm.org/atom/tree-view)
+
 
 Explore and open files in the current project.
 
@@ -16,4 +19,3 @@ The Tree View displays icons next to files. These icons are customizable by inst
 The `atom.file-icons` service must provide the following methods:
 
 * `iconClassForPath(path)` - Returns a CSS class name to add to the file view
-* `onWillDeactivate` - An event that lets the tree view return to its default icon strategy

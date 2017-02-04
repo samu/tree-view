@@ -1,10 +1,9 @@
 path = require 'path'
-# TODO: Remove the catch once Atom 1.7.0 is released
-try {shell} = require 'electron' catch then shell = require 'shell'
+{shell} = require 'electron'
 
 _ = require 'underscore-plus'
 {BufferedProcess, CompositeDisposable} = require 'atom'
-{repoForPath, getStyleObject} = require "./helpers"
+{repoForPath, getStyleObject, getFullExtension} = require "./helpers"
 {$, View} = require 'atom-space-pen-views'
 fs = require 'fs-plus'
 
@@ -17,6 +16,7 @@ Directory = require './directory'
 DirectoryView = require './directory-view'
 FileView = require './file-view'
 initializeAutoHide = require './auto-hide'
+RootDragAndDrop = require './root-drag-and-drop'
 LocalStorage = window.localStorage
 
 toggleConfig = (keyPath) ->
@@ -41,8 +41,10 @@ class TreeView extends View
     @selectedPath = null
     @ignoredPatterns = []
     @useSyncFS = false
+    @currentlyOpening = new Map
 
     @dragEventCounts = new WeakMap
+    @rootDragAndDrop = new RootDragAndDrop(this)
 
     @handleEvents()
 
@@ -88,6 +90,7 @@ class TreeView extends View
   deactivate: ->
     root.directory.destroy() for root in @roots
     @disposables.dispose()
+    @rootDragAndDrop.dispose()
     @detach() if @panel?
 
   handleEvents: ->
@@ -211,31 +214,31 @@ class TreeView extends View
   entryClicked: (e) ->
     entry = e.currentTarget
     isRecursive = e.altKey or false
-    switch e.originalEvent?.detail ? 1
-      when 1
-        @selectEntry(entry)
-        if entry instanceof FileView
-          if entry.getPath() is atom.workspace.getActivePaneItem()?.getPath?()
-            @openedItem = Promise.resolve(atom.workspace.getActivePaneItem())
-            @focus()
-          else
-            @openedItem = atom.workspace.open(entry.getPath(), pending: true)
-        else if entry instanceof DirectoryView
-          entry.toggleExpansion(isRecursive)
-      when 2
-        if entry instanceof FileView
-          @openedItem.then (item) ->
-            activePane = atom.workspace.getActivePane()
-            if activePane?.getPendingItem?
-              activePane.clearPendingItem() if activePane.getPendingItem() is item
-            else if item.terminatePendingState?
-              item.terminatePendingState()
-          unless entry.getPath() is atom.workspace.getActivePaneItem()?.getPath?()
-            @unfocus()
-        else if entry instanceof DirectoryView
-          entry.toggleExpansion(isRecursive)
+    @selectEntry(entry)
+    if entry instanceof DirectoryView
+      entry.toggleExpansion(isRecursive)
+    else if entry instanceof FileView
+      @fileViewEntryClicked(e)
 
     false
+
+  fileViewEntryClicked: (e) ->
+    filePath = e.currentTarget.getPath()
+    detail = e.originalEvent?.detail ? 1
+    alwaysOpenExisting = atom.config.get('tree-view.alwaysOpenExisting')
+    if detail is 1
+      if atom.config.get('core.allowPendingPaneItems')
+        openPromise = atom.workspace.open(filePath, pending: true, activatePane: false, searchAllPanes: alwaysOpenExisting)
+        @currentlyOpening.set(filePath, openPromise)
+        openPromise.then => @currentlyOpening.delete(filePath)
+    else if detail is 2
+      @openAfterPromise(filePath, searchAllPanes: alwaysOpenExisting)
+
+  openAfterPromise: (uri, options) ->
+    if promise = @currentlyOpening.get(uri)
+      promise.then -> atom.workspace.open(uri, options)
+    else
+      atom.workspace.open(uri, options)
 
   resizeStarted: =>
     $(document).on('mousemove', @resizeTreeView)
@@ -282,6 +285,11 @@ class TreeView extends View
     @loadIgnoredPatterns()
 
     @roots = for projectPath in atom.project.getPaths()
+      continue unless stats = fs.lstatSyncNoException(projectPath)
+      stats = _.pick stats, _.keys(stats)...
+      for key in ["atime", "birthtime", "ctime", "mtime"]
+        stats[key] = stats[key].getTime()
+
       directory = new Directory({
         name: path.basename(projectPath)
         fullPath: projectPath
@@ -292,6 +300,7 @@ class TreeView extends View
                         {isExpanded: true}
         @ignoredPatterns
         @useSyncFS
+        stats
       })
       root = new DirectoryView()
       root.initialize(directory)
@@ -356,7 +365,7 @@ class TreeView extends View
     @selectEntry(@entryForPath(entryPath))
 
   moveDown: (event) ->
-    event.stopImmediatePropagation()
+    event?.stopImmediatePropagation()
     selectedEntry = @selectedEntry()
     if selectedEntry?
       if selectedEntry instanceof DirectoryView
@@ -390,7 +399,9 @@ class TreeView extends View
 
   expandDirectory: (isRecursive=false) ->
     selectedEntry = @selectedEntry()
-    if selectedEntry instanceof DirectoryView
+    if isRecursive is false and selectedEntry.isExpanded
+      @moveDown() if selectedEntry.directory.getEntries().length > 0
+    else
       selectedEntry.expand(isRecursive)
 
   collapseDirectory: (isRecursive=false) ->
@@ -405,20 +416,13 @@ class TreeView extends View
     selectedEntry = @selectedEntry()
     if selectedEntry instanceof DirectoryView
       if expandDirectory
-        selectedEntry.expand()
+        @expandDirectory(false)
       else
         selectedEntry.toggleExpansion()
     else if selectedEntry instanceof FileView
-      atom.workspace.open(selectedEntry.getPath(), {activatePane})
-      uri = selectedEntry.getPath()
-      activePane = atom.workspace.getActivePane()
-      item = activePane?.itemForURI(uri)
-      if item? and not options.pending
-        if activePane?.getPendingItem?
-          activePane.clearPendingItem() if activePane.getPendingItem() is item
-        else if item.terminatePendingState?
-          item.terminatePendingState()
-      atom.workspace.open(uri, options)
+      if atom.config.get('tree-view.alwaysOpenExisting')
+        options = Object.assign searchAllPanes: true, options
+      @openAfterPromise(selectedEntry.getPath(), options)
       @autoHide.handleOpen()
 
   openSelectedEntrySplit: (orientation, side) ->
@@ -480,7 +484,7 @@ class TreeView extends View
         label: 'Finder'
         args: ['-R', pathToOpen]
       when 'win32'
-        args = ["/select,#{pathToOpen}"]
+        args = ["/select,\"#{pathToOpen}\""]
 
         if process.env.SystemRoot
           command = path.join(process.env.SystemRoot, 'explorer.exe')
@@ -500,13 +504,7 @@ class TreeView extends View
         label: 'File Manager'
         args: [pathToOpen]
 
-  showSelectedEntryInFileManager: ->
-    entry = @selectedEntry()
-    return unless entry
-
-    isFile = entry instanceof FileView
-    {command, args, label} = @fileManagerCommandForPath(entry.getPath(), isFile)
-
+  openInFileManager: (command, args, label, isFile) ->
     handleError = (errorMessage) ->
       atom.notifications.addError "Opening #{if isFile then 'file' else 'folder'} in #{label} failed",
         detail: errorMessage
@@ -524,10 +522,24 @@ class TreeView extends View
 
       handleError(errorMessage) if failed
 
-    showProcess = new BufferedProcess({command, args, stderr, exit})
+    showProcess = new BufferedProcess({command, args, options: {shell: false}, stderr, exit})
     showProcess.onWillThrowError ({error, handle}) ->
       handle()
       handleError(error?.message)
+    showProcess
+
+  showSelectedEntryInFileManager: ->
+    return unless entry = @selectedEntry()
+
+    isFile = entry instanceof FileView
+    {command, args, label} = @fileManagerCommandForPath(entry.getPath(), isFile)
+    @openInFileManager(command, args, label, isFile)
+
+  showCurrentFileInFileManager: ->
+    return unless editor = atom.workspace.getActiveTextEditor()
+    return unless editor.getPath()
+    {command, args, label} = @fileManagerCommandForPath(editor.getPath(), true)
+    @openInFileManager(command, args, label, true)
 
   openSelectedEntryInNewWindow: ->
     if pathToOpen = @selectedEntry()?.getPath()
@@ -565,18 +577,35 @@ class TreeView extends View
       message: "Are you sure you want to delete the selected #{if selectedPaths.length > 1 then 'items' else 'item'}?"
       detailedMessage: "You are deleting:\n#{selectedPaths.join('\n')}"
       buttons:
-        "Move to Trash": ->
+        "Move to Trash": =>
           failedDeletions = []
           for selectedPath in selectedPaths
-            if not shell.moveItemToTrash(selectedPath)
+            if shell.moveItemToTrash(selectedPath)
+              for editor in atom.workspace.getTextEditors()
+                if editor?.getPath() is selectedPath
+                  editor.destroy()
+            else
               failedDeletions.push "#{selectedPath}"
             if repo = repoForPath(selectedPath)
               repo.getPathStatus(selectedPath)
           if failedDeletions.length > 0
-            atom.notifications.addError "The following #{if failedDeletions.length > 1 then 'files' else 'file'} couldn't be moved to trash#{if process.platform is 'linux' then " (is `gvfs-trash` installed?)" else ""}",
+            atom.notifications.addError @formatTrashFailureMessage(failedDeletions),
+              description: @formatTrashEnabledMessage()
               detail: "#{failedDeletions.join('\n')}"
               dismissable: true
+          @updateRoots() if atom.config.get('tree-view.squashDirectoryNames')
         "Cancel": null
+
+  formatTrashFailureMessage: (failedDeletions) ->
+    fileText = if failedDeletions.length > 1 then 'files' else 'file'
+
+    "The following #{fileText} couldn't be moved to the trash."
+
+  formatTrashEnabledMessage: ->
+    switch process.platform
+      when 'linux' then 'Is `gvfs-trash` installed?'
+      when 'darwin' then 'Is Trash enabled on the volume where the files are stored?'
+      when 'win32' then 'Is there a Recycle Bin on the drive where the files are stored?'
 
   # Public: Copy the path of the selected entry element.
   #         Save the path in localStorage, so that copying from 2 different
@@ -635,10 +664,11 @@ class TreeView extends View
           originalNewPath = newPath
           while fs.existsSync(newPath)
             if initialPathIsDirectory
-              newPath = "#{originalNewPath}#{fileCounter.toString()}"
+              newPath = "#{originalNewPath}#{fileCounter}"
             else
-              fileArr = originalNewPath.split('.')
-              newPath = "#{fileArr[0]}#{fileCounter.toString()}.#{fileArr[1]}"
+              extension = getFullExtension(originalNewPath)
+              filePath = path.join(path.dirname(originalNewPath), path.basename(originalNewPath, extension))
+              newPath = "#{filePath}#{fileCounter}#{extension}"
             fileCounter += 1
 
           if fs.isDirectorySync(initialPath)
@@ -662,10 +692,12 @@ class TreeView extends View
     dialog.on 'directory-created', (event, createdPath) =>
       @entryForPath(createdPath)?.reload()
       @selectEntryForPath(createdPath)
+      @updateRoots() if atom.config.get('tree-view.squashDirectoryNames')
       @autoHide.handleOpen()
       false
     dialog.on 'file-created', (event, createdPath) =>
       atom.workspace.open(createdPath)
+      @updateRoots() if atom.config.get('tree-view.squashDirectoryNames')
       @autoHide.handleOpen()
       false
     dialog.attach()
@@ -837,14 +869,20 @@ class TreeView extends View
     @list[0].classList.contains('multi-select')
 
   onDragEnter: (e) =>
+    return if @rootDragAndDrop.isDragging(e)
+
     e.stopPropagation()
+
     entry = e.currentTarget.parentNode
     @dragEventCounts.set(entry, 0) unless @dragEventCounts.get(entry)
     entry.classList.add('selected') if @dragEventCounts.get(entry) is 0
     @dragEventCounts.set(entry, @dragEventCounts.get(entry) + 1)
 
   onDragLeave: (e) =>
+    return if @rootDragAndDrop.isDragging(e)
+
     e.stopPropagation()
+
     entry = e.currentTarget.parentNode
     @dragEventCounts.set(entry, @dragEventCounts.get(entry) - 1)
     entry.classList.remove('selected') if @dragEventCounts.get(entry) is 0
@@ -852,6 +890,9 @@ class TreeView extends View
   # Handle entry name object dragstart event
   onDragStart: (e) ->
     e.stopPropagation()
+
+    if @rootDragAndDrop.canDragStart(e)
+      return @rootDragAndDrop.onDragStart(e)
 
     target = $(e.currentTarget).find(".name")
     initialPath = target.data("path")
@@ -876,18 +917,26 @@ class TreeView extends View
 
   # Handle entry dragover event; reset default dragover actions
   onDragOver: (e) ->
-    e.preventDefault()
-    e.stopPropagation()
+    return if @rootDragAndDrop.isDragging(e)
 
-  # Handle entry drop event
-  onDrop: (e) ->
     e.preventDefault()
     e.stopPropagation()
 
     entry = e.currentTarget
-    return unless entry instanceof DirectoryView
+    if @dragEventCounts.get(entry) > 0 and not entry.classList.contains('selected')
+      entry.classList.add('selected')
 
+  # Handle entry drop event
+  onDrop: (e) ->
+    return if @rootDragAndDrop.isDragging(e)
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    entry = e.currentTarget
     entry.classList.remove('selected')
+
+    return unless entry instanceof DirectoryView
 
     newDirectoryPath = $(entry).find(".name").data("path")
     return false unless newDirectoryPath
